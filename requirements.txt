@@ -1,0 +1,10 @@
+gspread
+google-auth-oauthlib
+google-api-python-client
+python-dotenv
+openai
+newspaper3k
+requests
+youtube-transcript-api
+tenacity
+tldextract
