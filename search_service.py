@@ -2,7 +2,7 @@
 import logging
 from typing import List, Callable, Dict, Any
 
-from thetool.app.core.services.external.apify_service import ApifyService
+from apify_service import ApifyService
 
 logger = logging.getLogger(__name__)
 
