@@ -1,3 +1,5 @@
+# main.py
+
 import os
 import time
 from dotenv import load_dotenv
@@ -5,14 +7,15 @@ import gspread
 from google.oauth2.service_account import Credentials
 import re
 import pandas as pd
-from newspaper import Article
+from newspaper import Article, Config
 
-
-from search_service import SearchService
-from ai_assistant_service import AIAssistantService
+from services.search_service import SearchService
+from services.ai_assistant_service import AIAssistantService
 
 # --- Configuration and Setup ---
 load_dotenv()
+GPT35_MODEL = "gpt-3.5-turbo"
+GPT4_MODEL = "gpt-4-turbo-preview"
 
 # --- Helper Functions ---
 def extract_domain(url):
@@ -22,14 +25,13 @@ def extract_domain(url):
 
 def scrape_page_content(url: str) -> str | None:
     try:
-        article = Article(url)
+        config = Config()
+        config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
+
+        article = Article(url, config=config)
         article.download()
         article.parse()
-        text = article.text.strip()
-        if len(text) < 100:
-            text = article.meta_description or text
-
-        return text[:5000]
+        return article.text[:5000]
     except Exception as e:
         print(f"     - ⚠️ Scraping failed for {url}: {e}")
         return None
@@ -41,12 +43,11 @@ def main():
 
     apify_key = os.getenv('APIFY_API_KEY')
     openai_key = os.getenv('OPENAI_API_KEY')
-
     if not apify_key or not openai_key:
-        print("❌ FATAL: APIFY_API_KEY or OPENAI_API_KEY not found in .env file.")
+        print("❌ FATAL: APIFY_API_KEY or OPENAI_API_KEY not found.")
         return
+    print("✅ API keys loaded successfully.")
 
-    # --- Google Sheets Setup ---
     try:
         print("📊 Connecting to Google Sheets and loading configuration...")
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -62,28 +63,20 @@ def main():
         research_strategies = research_sheet.get_all_records()
         message_template = messaging_sheet.get('A2')[0][0]
         personalization_master_prompt = messaging_sheet.get('B2')[0][0]
-
-        print(f"✅ Found {len(companies_data)} companies to process.")
-        print(f"✅ Master personalization prompt loaded.")
+        print(f"✅ Found {len(companies_data)} companies.")
         print("=" * 60)
-
     except Exception as e:
         print(f"❌ Fatal Error during setup: {e}")
         return
 
-    # --- Initialize Services ---
     search_service = SearchService(api_key=apify_key)
     ai_service = AIAssistantService(api_key=openai_key)
 
-    # --- Processing Loop ---
     print("🔥 Starting company processing loop...")
     for i, company in enumerate(companies_data):
         company_name = company.get('Company Name')
         company_website = company.get('Website URL')
-
-        if not company_name or not company_website:
-            print(f"\n[{i+1}/{len(companies_data)}] Skipping row due to missing Name or Website.")
-            continue
+        if not company_name or not company_website: continue
 
         print(f"\n[{i+1}/{len(companies_data)}] Processing: {company_name}")
         print("-" * 40)
@@ -91,76 +84,81 @@ def main():
         research_summary = None
         source_url = None
 
-        # This loop now performs one search at a time, which is more robust.
-        print("  1. Executing research strategies one-by-one...")
+        print("  1. Executing research strategies...")
         for strategy in research_strategies:
-            strategy_query_template = strategy.get('Query')
-            research_prompt_template = strategy.get('Research Prompt')
+            if research_summary: break # Exit if we've already found a fact
 
-            if not strategy_query_template or not research_prompt_template:
-                continue
+            strategy_query = strategy.get('Query')
+            research_prompt = strategy.get('Research Prompt')
+            if not strategy_query or not research_prompt: continue
 
             domain = extract_domain(company_website)
             if not domain: continue
 
-            formatted_query = strategy_query_template.format(company=company_name, domain=domain)
-
+            formatted_query = strategy_query.format(company=company_name, domain=domain)
             search_results = search_service.search(formatted_query)
 
-            if not search_results:
+            if not search_results or not search_results[0].get('organicResults'):
                 print(f"     - No results for query: '{formatted_query}'")
-                time.sleep(2)
                 continue
 
-            organic_results = search_results[0].get('organicResults', [])
-            if not organic_results:
-                print(f"     - No organic results for query: '{formatted_query}'")
-                continue
+            # NEW: Try the top 3 organic results
+            for result in search_results[0]['organicResults'][:3]:
+                if research_summary: break
+                url = result.get('url')
+                if not url: continue
 
-            best_url = organic_results[0].get('url')
-            if not best_url: continue
-            print(f"     -> Found URL: {best_url}. Scraping content...")
-            scraped_content = scrape_page_content(best_url)
+                print(f"     -> Found URL: {url}. Scraping...")
+                scraped_content = scrape_page_content(url)
 
-            if not scraped_content or len(scraped_content) < 100:
-                print("     - Scraping failed or content was too short. Trying next strategy.")
-                continue
+                if not scraped_content or len(scraped_content) < 150:
+                    print("     - Scraping failed or content too short.")
+                    continue
 
-            print("     -> Content scraped. Submitting to AI for summary...")
-            system_prompt = "You are a research assistant. Your job is to analyze the provided web page content and extract information precisely according to the user's instructions."
+                print("     -> Content scraped. Submitting for summary...")
+                summary = ai_service.get_completion(
+                    user_prompt=f"{research_prompt}\n\nContent:\n---\n{scraped_content}\n---",
+                    system_prompt="You are a research assistant. Extract information precisely according to instructions.",
+                    model=GPT35_MODEL, max_tokens=200
+                )
 
-            user_prompt_for_summary = f"{research_prompt_template}\n\nHere is the content to analyze:\n\n---\n{scraped_content}\n---"
-            summary = ai_service.get_completion(
-                user_prompt=user_prompt_for_summary,
-                system_prompt=system_prompt,
-                browse_url=best_url
+                if "Error:" not in summary and summary != "AI_REFUSAL":
+                    research_summary = summary
+                    source_url = url
+                    print(f"     -> SUCCESS! AI Summary: '{research_summary[:100]}...'")
+                    break
+                else:
+                    print(summary)
+                    print(f"     -> AI failed or refused summary.")
+
+        if research_summary:
+            print("\n  2. Generating personalized message...")
+            final_prompt = (
+                f"{personalization_master_prompt}\n\n"
+                f"Here is the base message template to start with:\n"
+                f"'{message_template}'\n\n"
+                f"Here is the research summary you must incorporate:\n"
+                f"'{research_summary}'"
             )
 
-            if "Error:" not in summary and len(summary) > 15:
-                research_summary = summary
-                source_url = best_url
-                print(f"     -> SUCCESS! AI Summary: '{research_summary[:100]}...'")
-                break # A strategy succeeded, so we stop and move to personalization
-            else:
-                print(f"     -> AI failed to summarize. Trying next strategy.")
+            personalized_message = ai_service.get_completion(
+                user_prompt=final_prompt,
+                system_prompt="You are an expert at writing natural, personalized outreach messages.",
+                model=GPT4_MODEL
+            )
 
-        # --- PERSONALIZATION AND OUTPUT ---
-        if research_summary:
-            print("\n  2. Generating personalized message with AI...")
-            final_prompt = personalization_master_prompt.format(company=company_name)
-            final_prompt += f"\n\nUse this research to inform your response: '{research_summary}'"
-            personalized_message = ai_service.get_completion(user_prompt=final_prompt)
-            status = "✓ Personalized"
+            status = "✓ Personalized" if "Error:" not in personalized_message and personalized_message != "AI_REFUSAL" else "⚠️ Personalization Failed"
             print(f"     -> AI Message: '{personalized_message}'")
         else:
             print("\n  2. No strategies produced a valid summary.")
             personalized_message = ""
-            status = "❌ No source found/summarized"
+            status = "❌ No source summarized"
 
         output_row_data = [
             company.get('Company LinkedIn URL', ''), company_website, company_name,
             research_summary or "", source_url or "", message_template,
-            personalized_message, status
+            personalized_message if status == "✓ Personalized" else "",
+            status
         ]
         output_sheet.update(range_name=f'A{i+2}:H{i+2}', values=[output_row_data])
         print(f"  ✅ Wrote to output sheet with status: {status}")

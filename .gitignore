@@ -17,3 +17,5 @@ cache/
 
 # OS files
 .DS_Store
+
+repopack-output.txt
