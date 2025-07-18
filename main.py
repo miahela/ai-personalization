@@ -115,7 +115,8 @@ def main():
                     print("     - Scraping failed or content too short.")
                     continue
 
-                print("     -> Content scraped. Submitting for summary...")
+                print("     -> Content scraped. Submitting for summary... ")
+                print(scraped_content[:200] + "...")  # Log first 200 chars for brevity
                 summary = ai_service.get_completion(
                     user_prompt=f"{research_prompt}\n\nContent:\n---\n{scraped_content}\n---",
                     system_prompt="You are a research assistant. Extract information precisely according to instructions.",
