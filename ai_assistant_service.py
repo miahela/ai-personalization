@@ -1,8 +1,3 @@
-# standalone_ai_service.py
-"""
-A standalone version of the AIAssistantService for this prototype.
-It interacts directly with the OpenAI API without database dependencies.
-"""
 import logging
 from openai import OpenAI, APIError, RateLimitError
 
@@ -10,9 +5,6 @@ logger = logging.getLogger(__name__)
 
 class AIAssistantService:
     def __init__(self, api_key: str, model: str = 'gpt-4-turbo', max_tokens: int = 500):
-        """
-        Initializes the standalone AI service.
-        """
         if not api_key:
             raise ValueError("OpenAI API key not configured.")
 
@@ -23,9 +15,6 @@ class AIAssistantService:
         print("✅ Standalone AI Assistant Service Initialized.")
 
     def get_completion(self, user_prompt: str, system_prompt: str = None, browse_url: str = None) -> str:
-        """
-        Gets a completion from the OpenAI API, with optional browsing.
-        """
         if not self.client:
             logger.error("OpenAI client not initialized.")
             return "Error: AI client not initialized."
@@ -34,32 +23,26 @@ class AIAssistantService:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
-        # Add the user prompt
         messages.append({"role": "user", "content": user_prompt})
 
         try:
-            # The new 'gpt-4-turbo' model and others handle browsing internally 
-            # if a URL is present in the content. We just need to make sure it's there.
             if browse_url:
-                # Append the URL to the user prompt for the model to see and browse
                 messages[-1]['content'] += f"\n\nReference URL to browse: {browse_url}"
 
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=self.max_tokens,
-                temperature=0.2, # Lower temperature for more factual, less creative responses
+                temperature=0.2,
             )
 
             if response.choices and len(response.choices) > 0:
                 generated_text = response.choices[0].message.content.strip()
-                # Clean up common GPT conversational fluff
                 generated_text = generated_text.replace('"', '').strip()
                 return generated_text
             else:
                 logger.error("No response choices from OpenAI API.")
                 return "Error: No response from AI."
-
         except RateLimitError as e:
             logger.warning("Rate limit exceeded with OpenAI API. Waiting and retrying might be needed.")
             return f"Error: Rate limit exceeded. {e}"

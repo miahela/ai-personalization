@@ -8,3 +8,5 @@ requests
 youtube-transcript-api
 tenacity
 tldextract
+newspaper3k
+lxml_html_clean
