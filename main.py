@@ -9,6 +9,9 @@ import re
 import pandas as pd
 from newspaper import Article, Config
 
+from urllib.parse import urlparse, parse_qs
+from youtube_transcript_api import YouTubeTranscriptApi
+
 from services.search_service import SearchService
 from services.ai_assistant_service import AIAssistantService
 
@@ -36,6 +39,28 @@ def scrape_page_content(url: str) -> str | None:
         print(f"     - ⚠️ Scraping failed for {url}: {e}")
         return None
 
+def get_video_id(url: str) -> str | None:
+    parsed_url = urlparse(url)
+    if "youtube.com" in parsed_url.hostname:
+        # For URLs like: https://www.youtube.com/watch?v=VIDEO_ID
+        video_id = parse_qs(parsed_url.query).get("v")
+        if video_id:
+            return video_id[0]
+    elif "youtu.be" in parsed_url.hostname:
+        # For URLs like: https://youtu.be/VIDEO_ID
+        return parsed_url.path[1:]
+    return None
+
+def get_youtube_transcript(video_id: str) -> str | None:
+    try:
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        # Join all the text parts of the transcript into a single string
+        transcript_text = " ".join([d['text'] for d in transcript_list])
+        return transcript_text[:7000] # Limit length for the AI
+    except Exception as e:
+        print(f"     - ⚠️ Could not get transcript for video ID {video_id}: {e}")
+        return None
+
 # --- Main Orchestration ---
 def main():
     print("🚀 Starting AI-Powered Outreach Personalization Engine...")
@@ -58,9 +83,12 @@ def main():
         research_sheet = spreadsheet.worksheet("Research")
         messaging_sheet = spreadsheet.worksheet("Messaging")
         output_sheet = spreadsheet.worksheet("Output")
+        print("✅ Connected to Google Sheets successfully.")
 
         companies_data = companies_sheet.get_all_records()
+        print(f"✅ Loaded {len(companies_data)} companies from 'Companies' sheet.")
         research_strategies = research_sheet.get_all_records()
+        print(f"✅ Loaded {len(companies_data)} companies and {len(research_strategies)} research strategies.")
         message_template = messaging_sheet.get('A2')[0][0]
         personalization_master_prompt = messaging_sheet.get('B2')[0][0]
         print(f"✅ Found {len(companies_data)} companies.")
@@ -108,17 +136,22 @@ def main():
                 url = result.get('url')
                 if not url: continue
 
-                print(f"     -> Found URL: {url}. Scraping...")
-                scraped_content = scrape_page_content(url)
+                content = None
+                video_id = get_video_id(url)
+                if video_id:
+                    print("     -> YouTube link found. Fetching transcript...")
+                    content = get_youtube_transcript(video_id)
+                else:
+                    print("     -> Standard URL. Scraping content...")
+                    content = scrape_page_content(url)
 
-                if not scraped_content or len(scraped_content) < 150:
+                if not content or len(content) < 150:
                     print("     - Scraping failed or content too short.")
                     continue
 
                 print("     -> Content scraped. Submitting for summary... ")
-                print(scraped_content[:200] + "...")  # Log first 200 chars for brevity
                 summary = ai_service.get_completion(
-                    user_prompt=f"{research_prompt}\n\nContent:\n---\n{scraped_content}\n---",
+                    user_prompt=f"{research_prompt}\n\nContent:\n---\n{content}\n---",
                     system_prompt="You are a research assistant. Extract information precisely according to instructions.",
                     model=GPT35_MODEL, max_tokens=200
                 )
@@ -129,7 +162,6 @@ def main():
                     print(f"     -> SUCCESS! AI Summary: '{research_summary[:100]}...'")
                     break
                 else:
-                    print(summary)
                     print(f"     -> AI failed or refused summary.")
 
         if research_summary:

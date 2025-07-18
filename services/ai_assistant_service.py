@@ -36,7 +36,6 @@ class AIAssistantService:
 
             if response.choices:
                 generated_text = response.choices[0].message.content.strip()
-                print(f"AI Response: {generated_text[:100]}...")  # Log first 100 chars for brevity
                 if generated_text.upper() == "NO":
                     return "AI_REFUSAL" # Return a special refusal string
                 return generated_text.replace('"', '').strip()
