@@ -13,15 +13,12 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from services.search_service import SearchService
 from services.ai_assistant_service import AIAssistantService
 
+# --- Configuration and Setup ---
 load_dotenv()
-
-# --- Model Configuration ---
 SUMMARY_MODEL = "gpt-3.5-turbo"
 PERSONALIZATION_MODEL = "gpt-4-turbo-preview"
-
-# --- System Prompts ---
 SUMMARY_SYSTEM_PROMPT = "You are a research assistant. Analyze the provided text (which could be an article or a video transcript) and extract information precisely according to the user's instructions."
-PERSONALIZATION_SYSTEM_PROMPT = "You are an expert at writing natural, personalized outreach messages."
+PERSONALIZATION_SYSTEM_PROMPT = "You are an expert at writing natural, personalized outreach messages. Follow the user's instructions precisely."
 
 # --- Helper Functions ---
 def extract_domain(url):
@@ -59,11 +56,7 @@ def get_youtube_transcript(video_id: str) -> str | None:
         print(f"     - ⚠️ Could not get transcript for video ID {video_id}: {e}")
         return None
 
-def process_company(company: dict, research_strategies: list, services: dict) -> dict:
-    """
-    Processes a single company, from research to personalization.
-    Returns a dictionary with the results.
-    """
+def process_company(company: dict, research_strategies: list, services: dict, master_prompt: str) -> dict:
     company_name = company.get('Company Name')
     company_website = company.get('Website URL')
 
@@ -76,48 +69,39 @@ def process_company(company: dict, research_strategies: list, services: dict) ->
     print("  1. Executing research strategies...")
     for strategy in research_strategies:
         if research_summary: break
-
         strategy_query = strategy.get('Query')
         research_prompt = strategy.get('Research Prompt')
         if not strategy_query or not research_prompt: continue
-
-        domain = extract_domain(company_website)
-        if not domain: continue
-
+        if '{domain}' in strategy_query and not company_website:
+            print(f"     - Skipping strategy '{strategy_query}' (requires website).")
+            continue
+        domain = extract_domain(company_website) if company_website else ""
         formatted_query = strategy_query.format(company=company_name, domain=domain)
         search_results = services['search'].search(formatted_query)
-
         if not search_results or not search_results[0].get('organicResults'):
             print(f"     - No results for query: '{formatted_query}'")
             continue
-
         for result in search_results[0]['organicResults'][:3]:
             if research_summary: break
             url = result.get('url')
             if not url: continue
-
             print(f"     -> Found URL: {url}.")
-            content = None
-            video_id = get_video_id(url)
-
+            content, video_id = None, get_video_id(url)
             if video_id:
                 print("     -> YouTube link. Fetching transcript...")
                 content = get_youtube_transcript(video_id)
             else:
                 print("     -> Standard URL. Scraping content...")
                 content = scrape_page_content(url)
-
             if not content or len(content) < 150:
                 print("     - Failed to get valid content.")
                 continue
-
             print("     -> Content retrieved. Submitting for summary...")
             summary = services['ai'].get_completion(
                 user_prompt=f"{research_prompt}\n\nContent:\n---\n{content}\n---",
                 system_prompt=SUMMARY_SYSTEM_PROMPT,
                 model=SUMMARY_MODEL, max_tokens=200
             )
-
             if "Error:" not in summary and summary != "AI_REFUSAL":
                 research_summary = summary
                 source_url = url
@@ -126,18 +110,15 @@ def process_company(company: dict, research_strategies: list, services: dict) ->
             else:
                 print(f"     -> AI failed or refused summary.")
 
-    # --- Personalization Step ---
     personalized_message = ""
     status = "❌ No source summarized"
 
     if research_summary:
         print("\n  2. Generating personalized message...")
-        final_prompt = (
-            f"{services['master_prompt']}\n\n"
-            f"Here is the base message template to start with:\n"
-            f"'{services['template']}'\n\n"
-            f"Here is the research summary you must incorporate:\n"
-            f"'{research_summary}'"
+
+        final_prompt = master_prompt.format(
+            summary=research_summary,
+            company=company_name
         )
 
         personalized_message = services['ai'].get_completion(
@@ -148,15 +129,6 @@ def process_company(company: dict, research_strategies: list, services: dict) ->
 
         if "Error:" not in personalized_message and personalized_message != "AI_REFUSAL":
             status = "✓ Personalized"
-            # Check if the AI's response already includes the greeting.
-            # If not, prepend it.
-            if not personalized_message.strip().lower().startswith('{name}'):
-                # We take the part of the message AFTER the greeting and append it
-                greeting = "{Name}, good to connect. "
-                # This logic is tricky. Let's simplify and just prepend for now.
-                # Let's assume the AI prompt is good enough to handle this.
-                # A simpler fix is to adjust the prompt to be more explicit.
-                pass # The prompt is now responsible for the full structure
             print(f"     -> AI Message: '{personalized_message}'")
         else:
             status = "⚠️ Personalization Failed"
@@ -171,12 +143,10 @@ def process_company(company: dict, research_strategies: list, services: dict) ->
         "status": status
     }
 
-# --- Main Orchestration ---
 def main():
     print("🚀 Starting AI-Powered Outreach Personalization Engine...")
     print("=" * 60)
 
-    # --- Setup ---
     apify_key = os.getenv('APIFY_API_KEY')
     openai_key = os.getenv('OPENAI_API_KEY')
     if not apify_key or not openai_key:
@@ -205,36 +175,26 @@ def main():
         print(f"❌ Fatal Error during setup: {e}")
         return
 
-    # --- Initialize Services ---
     services = {
         'search': SearchService(api_key=apify_key),
-        'ai': AIAssistantService(api_key=openai_key),
-        'template': message_template,
-        'master_prompt': personalization_master_prompt.replace('{Name}', 'the recipient') # Make prompt generic
+        'ai': AIAssistantService(api_key=openai_key)
     }
 
-    # --- Main Loop ---
     print("🔥 Starting company processing loop...")
     for i, company in enumerate(companies_data):
-        if not company.get('Company Name') or not company.get('Website URL'):
-            print(f"\nSkipping row {i+2} due  to missing data.")
+        company_name = company.get('Company Name')
+        has_website = company.get('Website URL')
+        has_linkedin = company.get('Company LinkedIn URL')
+        if not company_name or (not has_website and not has_linkedin):
+            print(f"\nSkipping row {i+2} due to missing data.")
             continue
 
-        result = process_company(company, research_strategies, services)
-
-        final_message_output = result['personalized_message']
-        if result['status'] == "✓ Personalized" and not final_message_output.startswith('{Name}'):
-            # The AI can sometimes forget the placeholder. We'll add it back.
-            # A more robust solution is to split the template and insert the AI sentence.
-            greeting = "{Name}, good to connect. "
-            if "good to connect." in final_message_output:
-                # AI likely rewrote the whole thing, let's try to find the new part
-                parts = final_message_output.split("good to connect.")
-                final_message_output = greeting + parts[1].strip()
-            else: # If AI just gave the sentence, prepend it
-                base_question = "What’s the process typically look like to become an approved vendor for retail fixtures or millwork?"
-                final_message_output = f"{greeting}{result['personalized_message']} {base_question}"
-
+        result = process_company(
+            company=company,
+            research_strategies=research_strategies,
+            services=services,
+            master_prompt=personalization_master_prompt
+        )
 
         output_row_data = [
             company.get('Company LinkedIn URL', ''),
@@ -242,8 +202,8 @@ def main():
             company.get('Company Name', ''),
             result['research_summary'],
             result['source_url'],
-            services['template'],
-            final_message_output if result['status'] == "✓ Personalized" else "",
+            message_template,
+            result['personalized_message'],
             result['status']
         ]
         output_sheet.update(range_name=f'A{i+2}:H{i+2}', values=[output_row_data])
@@ -254,6 +214,6 @@ def main():
     print("✅ PERSONALIZATION COMPLETE!")
     print(f"📊 Check the 'Output' tab in your Google Sheet.")
     print("=" * 60)
-
+    
 if __name__ == "__main__":
     main()
