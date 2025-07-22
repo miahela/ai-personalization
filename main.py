@@ -81,11 +81,14 @@ def process_company(company: dict, research_strategies: list, services: dict, ma
         if not search_results or not search_results[0].get('organicResults'):
             print(f"     - No results for query: '{formatted_query}'")
             continue
+
+        print(f"     -> Found {len(search_results[0]['organicResults'])} results for query '{formatted_query}'. Trying top 3.")
         for result in search_results[0]['organicResults'][:3]:
             if research_summary: break
             url = result.get('url')
             if not url: continue
-            print(f"     -> Found URL: {url}.")
+
+            print(f"       -> Trying URL: {url}.")
             content, video_id = None, get_video_id(url)
             if video_id:
                 print("     -> YouTube link. Fetching transcript...")
@@ -108,7 +111,7 @@ def process_company(company: dict, research_strategies: list, services: dict, ma
                 print(f"     -> SUCCESS! AI Summary: '{research_summary[:100]}...'")
                 break
             else:
-                print(f"     -> AI failed or refused summary.")
+                print(f"         -> AI failed or refused summary for this URL.")
 
     personalized_message = ""
     status = "❌ No source summarized"
@@ -214,6 +217,6 @@ def main():
     print("✅ PERSONALIZATION COMPLETE!")
     print(f"📊 Check the 'Output' tab in your Google Sheet.")
     print("=" * 60)
-    
+
 if __name__ == "__main__":
     main()
