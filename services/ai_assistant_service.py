@@ -36,8 +36,8 @@ class AIAssistantService:
 
             if response.choices:
                 generated_text = response.choices[0].message.content.strip()
-                if generated_text.upper() == "NO":
-                    return "AI_REFUSAL" # Return a special refusal string
+                if generated_text.upper().startswith("NO:"):
+                    return f"AI_REFUSAL ({generated_text})"
                 return generated_text.replace('"', '').strip()
             else:
                 logger.error("No response choices from OpenAI API.")

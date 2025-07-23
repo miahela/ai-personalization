@@ -60,69 +60,91 @@ def process_company(company: dict, research_strategies: list, services: dict, ma
     company_name = company.get('Company Name')
     company_website = company.get('Website URL')
 
-    print(f"\nProcessing: {company_name}")
-    print("-" * 40)
+    print(f"\n▶️  Processing: {company_name}")
+    print("=" * 40)
 
     research_summary = None
     source_url = None
 
-    print("  1. Executing research strategies...")
-    for strategy in research_strategies:
+    for i, strategy in enumerate(research_strategies):
         if research_summary: break
+
+        print(f"\n  [Strategy {i+1}/{len(research_strategies)}]")
+
         strategy_query = strategy.get('Query')
         research_prompt = strategy.get('Research Prompt')
         if not strategy_query or not research_prompt: continue
         if '{domain}' in strategy_query and not company_website:
-            print(f"     - Skipping strategy '{strategy_query}' (requires website).")
+            print(f"    - 🟡 SKIPPING: Strategy requires a website, but none provided.")
             continue
         domain = extract_domain(company_website) if company_website else ""
         formatted_query = strategy_query.format(company=company_name, domain=domain)
         search_results = services['search'].search(formatted_query)
         if not search_results or not search_results[0].get('organicResults'):
-            print(f"     - No results for query: '{formatted_query}'")
+            print(f"    - ⚪️ INFO: No search results returned for this query.")
             continue
 
-        print(f"     -> Found {len(search_results[0]['organicResults'])} results for query '{formatted_query}'. Trying top 3.")
-        for result in search_results[0]['organicResults'][:3]:
+        top_results = search_results[0]['organicResults'][:3]
+        print(f"    - ✅ SEARCH: Found {len(top_results)} URLs. Trying top {min(len(top_results), 3)}.")
+
+        for j, result in enumerate(top_results):
             if research_summary: break
             url = result.get('url')
             if not url: continue
 
-            print(f"       -> Trying URL: {url}.")
+            print(f"\n    [URL {j+1}/{len(top_results)}] -> {url}")
+
             content, video_id = None, get_video_id(url)
             if video_id:
-                print("     -> YouTube link. Fetching transcript...")
+                print("      - 🟡 INFO: YouTube link found. Fetching transcript...")
                 content = get_youtube_transcript(video_id)
             else:
-                print("     -> Standard URL. Scraping content...")
+                print("      - 🟡 INFO: Standard URL. Scraping content...")
                 content = scrape_page_content(url)
-            if not content or len(content) < 150:
-                print("     - Failed to get valid content.")
+
+            if not content:
+                print("      - 🔴 FAILED: Scraping returned no content (likely blocked or error).")
                 continue
-            print("     -> Content retrieved. Submitting for summary...")
-            summary = services['ai'].get_completion(
-                user_prompt=f"{research_prompt}\n\nContent:\n---\n{content}\n---",
-                system_prompt=SUMMARY_SYSTEM_PROMPT,
+            if len(content) < 150:
+                print("      - 🔴 FAILED: Scraped content was too short to be useful.")
+                continue
+
+            # --- PREVIEW OF SCRAPED CONTENT ---
+            print("      - ✅ SCRAPED: Successfully retrieved content.")
+            print("        " + "-"*20 + " Content Preview " + "-"*20)
+            print(f"        {content[:400].replace(chr(10), ' ')}...")
+            print("        " + "-"*57)
+
+            print("      - 🟡 INFO: Submitting content to Summarization AI (GPT-3.5)...")
+            potential_summary = services['ai'].get_completion(
+                user_prompt=f"My request is: '{research_prompt}'\n\nContent to Analyze:\n---\n{content}\n---",
+                system_prompt="You are a research analyst. Your goal is to find specific information. If the content provided answers the user's request, extract the answer in one sentence. If it does not, you MUST respond with only the word: NO.",
                 model=SUMMARY_MODEL, max_tokens=200
             )
-            if "Error:" not in summary and summary != "AI_REFUSAL":
-                research_summary = summary
-                source_url = url
-                print(f"     -> SUCCESS! AI Summary: '{research_summary[:100]}...'")
-                break
+
+            # --- PREVIEW OF AI RESPONSE & ERROR DIFFERENTIATION ---
+            if potential_summary.startswith("AI_REFUSAL") or "NO" in potential_summary.upper():
+                print(f"      - 🔴 FAILED: AI refused to summarize the content: {potential_summary}")
+                continue
+            elif "Error:" in potential_summary:
+                print(f"      - 🔴 FAILED: An API error occurred during summarization: {potential_summary}")
+                continue
             else:
-                print(f"         -> AI failed or refused summary for this URL.")
+                research_summary = potential_summary
+                source_url = url
+                print("      - ✅ SUCCESS: AI summary generated.")
+                print("        " + "-"*20 + " AI Summary " + "-"*20)
+                print(f"        {research_summary}")
+                print("        " + "-"*52)
+                break
 
     personalized_message = ""
-    status = "❌ No source summarized"
+    status = "❌ No Source Summarized"
 
     if research_summary:
-        print("\n  2. Generating personalized message...")
-
-        final_prompt = master_prompt.format(
-            summary=research_summary,
-            company=company_name
-        )
+        print("\n  [Personalization Step]")
+        print("    - 🟡 INFO: Submitting summary to Personalization AI (GPT-4)...")
+        final_prompt = master_prompt.format(summary=research_summary, company=company_name, domain=extract_domain(company_website) if company_website else "")
 
         personalized_message = services['ai'].get_completion(
             user_prompt=final_prompt,
@@ -130,14 +152,19 @@ def process_company(company: dict, research_strategies: list, services: dict, ma
             model=PERSONALIZATION_MODEL
         )
 
-        if "Error:" not in personalized_message and personalized_message != "AI_REFUSAL":
-            status = "✓ Personalized"
-            print(f"     -> AI Message: '{personalized_message}'")
-        else:
+        if "Error:" in personalized_message or personalized_message == "AI_REFUSAL":
             status = "⚠️ Personalization Failed"
+            print(f"    - 🔴 FAILED: An API error occurred during personalization.")
             personalized_message = ""
+        else:
+            status = "✓ Personalized"
+            print("    - ✅ SUCCESS: Personalized message generated.")
+            print("      " + "-"*20 + " Final Message " + "-"*20)
+            print(f"      {personalized_message}")
+            print("      " + "-"*55)
     else:
-        print("\n  2. No strategies produced a valid summary.")
+        print("\n  [Personalization Step]")
+        print("    - ⚪️ INFO: No valid summary was generated, skipping personalization.")
 
     return {
         "research_summary": research_summary or "",
