@@ -18,8 +18,6 @@ class AIAssistantService:
             logger.error("OpenAI client not initialized.")
             return "Error: AI client not initialized."
 
-        # Add the refusal instruction to the system prompt
-        system_prompt += "\nIf you cannot fulfill the request or find the required information, you MUST respond with only the word: NO"
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -36,6 +34,7 @@ class AIAssistantService:
 
             if response.choices:
                 generated_text = response.choices[0].message.content.strip()
+                print(f"AI Response: {generated_text[:100]}...")  # Log first 100 chars for brevity
                 if generated_text.upper().startswith("NO:"):
                     return f"AI_REFUSAL ({generated_text})"
                 return generated_text.replace('"', '').strip()

@@ -6,12 +6,12 @@ import gspread
 from google.oauth2.service_account import Credentials
 import re
 import pandas as pd
-from newspaper import Article, Config
 from urllib.parse import urlparse, parse_qs
 from youtube_transcript_api import YouTubeTranscriptApi
 
 from services.search_service import SearchService
 from services.ai_assistant_service import AIAssistantService
+from services.scraping_service import scrape_website_text
 
 # --- Configuration and Setup ---
 load_dotenv()
@@ -25,18 +25,6 @@ def extract_domain(url):
     if pd.isna(url) or url.strip() == '': return ''
     match = re.search(r'https{0,1}://(?:www\.)?([^/]+)', str(url))
     return match.group(1).lower() if match else ''
-
-def scrape_page_content(url: str) -> str | None:
-    try:
-        config = Config()
-        config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
-        article = Article(url, config=config)
-        article.download()
-        article.parse()
-        return article.text[:7000]
-    except Exception as e:
-        print(f"     - ⚠️ Scraping failed for {url}: {e}")
-        return None
 
 def get_video_id(url: str) -> str | None:
     parsed_url = urlparse(url)
@@ -100,7 +88,7 @@ def process_company(company: dict, research_strategies: list, services: dict, ma
                 content = get_youtube_transcript(video_id)
             else:
                 print("      - 🟡 INFO: Standard URL. Scraping content...")
-                content = scrape_page_content(url)
+                content = scrape_website_text(url)
 
             if not content:
                 print("      - 🔴 FAILED: Scraping returned no content (likely blocked or error).")
@@ -118,12 +106,12 @@ def process_company(company: dict, research_strategies: list, services: dict, ma
             print("      - 🟡 INFO: Submitting content to Summarization AI (GPT-3.5)...")
             potential_summary = services['ai'].get_completion(
                 user_prompt=f"My request is: '{research_prompt}'\n\nContent to Analyze:\n---\n{content}\n---",
-                system_prompt="You are a research analyst. Your goal is to find specific information. If the content provided answers the user's request, extract the answer in one sentence. If it does not, you MUST respond with only the word: NO.",
+                system_prompt=SUMMARY_SYSTEM_PROMPT,
                 model=SUMMARY_MODEL, max_tokens=200
             )
 
             # --- PREVIEW OF AI RESPONSE & ERROR DIFFERENTIATION ---
-            if potential_summary.startswith("AI_REFUSAL") or "NO" in potential_summary.upper():
+            if potential_summary.startswith("AI_REFUSAL"):
                 print(f"      - 🔴 FAILED: AI refused to summarize the content: {potential_summary}")
                 continue
             elif "Error:" in potential_summary:
